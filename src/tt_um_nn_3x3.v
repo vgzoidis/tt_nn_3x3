@@ -1,0 +1,155 @@
+default_nettype none
+
+module tt_um_nn_3x3 (
+    input  wire [7:0] ui_in,    // Dedicated inputs - 8-bit data in
+    output wire [7:0] uo_out,   // Dedicated outputs - 8-bit data out
+    input  wire [7:0] uio_in,   // IOs: Input path (Used for Control signals)
+    output wire [7:0] uio_out,  // IOs: Output path
+    output wire [7:0] uio_oe,   // IOs: Enable path
+    input  wire       ena,      // always 1 when powered
+    input  wire       clk,      // clock
+    input  wire       rst_n     // reset_n - low to reset
+);
+
+    // ==========================================
+    // TinyTapeout Pin Configuration
+    // ==========================================
+    assign uio_oe  = 8'b0000_0000; // Όλα τα uio ως inputs για τώρα
+    assign uio_out = 8'b0;
+
+    // Control signals from uio_in
+    wire [3:0] io_addr  = uio_in[3:0]; // 0..14=Write Addr, 15=Start Calc
+    wire       io_write = uio_in[4];   // 1=Write to selected address
+    wire       io_read  = uio_in[5];   // 1=Read outputs
+
+    // ==========================================
+    // Registers & Storage
+    // ==========================================
+    reg signed [7:0] x [0:2]; // 3 x 8-bit Inputs
+    reg signed [7:0] y [0:2]; // 3 x 8-bit Outputs
+    
+    // Programmable Weights and Biases
+    reg signed [7:0] W [0:2][0:2]; // [Neuron][Input]
+    reg signed [7:0] B [0:2];      // Biases
+
+    // ==========================================
+    // The Single Shared MAC Unit Engine
+    // ==========================================
+    reg signed [15:0] accumulator;
+    reg [3:0] calc_step;
+    reg [1:0] current_neuron;
+
+    localparam STATE_IDLE = 2'b00;
+    localparam STATE_MAC  = 2'b01;
+    localparam STATE_RELU = 2'b10;
+    reg [1:0] state;
+
+    wire signed [15:0] product = x[calc_step] * W[current_neuron][calc_step];   
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            state <= STATE_IDLE;
+            calc_step <= 0;
+            current_neuron <= 0;
+            accumulator <= 0;
+            
+            y[0] <= 0; y[1] <= 0; y[2] <= 0;
+            x[0] <= 0; x[1] <= 0; x[2] <= 0;
+            B[0] <= 0; B[1] <= 0; B[2] <= 0;
+            
+            W[0][0] <= 0; W[0][1] <= 0; W[0][2] <= 0;
+            W[1][0] <= 0; W[1][1] <= 0; W[1][2] <= 0;
+            W[2][0] <= 0; W[2][1] <= 0; W[2][2] <= 0;
+        end else if (ena) begin
+            // 1) Input Data Loading (Όταν είμαστε σε IDLE)
+            if (state == STATE_IDLE && io_write) begin      
+                case (io_addr)
+                    4'd0: x[0] <= ui_in;
+                    4'd1: x[1] <= ui_in;
+                    4'd2: x[2] <= ui_in;
+                    
+                    4'd3: W[0][0] <= ui_in;
+                    4'd4: W[0][1] <= ui_in;
+                    4'd5: W[0][2] <= ui_in;
+                    
+                    4'd6: W[1][0] <= ui_in;
+                    4'd7: W[1][1] <= ui_in;
+                    4'd8: W[1][2] <= ui_in;
+                    
+                    4'd9:  W[2][0] <= ui_in;
+                    4'd10: W[2][1] <= ui_in;
+                    4'd11: W[2][2] <= ui_in;
+                    
+                    4'd12: B[0] <= ui_in;
+                    4'd13: B[1] <= ui_in;
+                    4'd14: B[2] <= ui_in;
+                    default: ; // 15 is Start, no write
+                endcase
+            end
+
+            // 2) FSM Core για υπολογισμούς NN
+            case (state)
+                STATE_IDLE: begin
+                    if (io_addr == 4'd15 && !io_write && !io_read) begin // Trigger Start Calculation    
+                        state <= STATE_MAC;
+                        calc_step <= 0;
+                        current_neuron <= 0;
+                        accumulator <= B[0]; // Φόρτωση αρχικού Bias
+                    end
+                end
+
+                STATE_MAC: begin
+                    // Accumulator += X[step] * W[neuron][step]
+                    accumulator <= accumulator + product;
+
+                    if (calc_step == 2) begin
+                        state <= STATE_RELU;
+                        calc_step <= 0;
+                    end else begin
+                        calc_step <= calc_step + 1;
+                    end
+                end
+
+                STATE_RELU: begin
+                    // ReLU Activation (Αν το MSB είναι 1 (αρνητικό), τότε 0. Αλλιώς saturate αν ξεπερνά τα όρια)
+                    if (accumulator[15]) begin
+                        y[current_neuron] <= 8'd0;
+                    end else if (accumulator > 127) begin
+                        y[current_neuron] <= 8'd127; // Saturation 8-bit positive
+                    end else begin
+                        y[current_neuron] <= accumulator[7:0];
+                    end
+
+                    // Check if more neurons to calculate
+                    if (current_neuron == 2) begin
+                        state <= STATE_IDLE; // Τέλος δικτύου
+                    end else begin
+                        current_neuron <= current_neuron + 1;
+                        accumulator <= B[current_neuron + 1]; // Pre-load next Bias
+                        state <= STATE_MAC;
+                    end
+                end
+            endcase
+        end
+    end
+
+    // ==========================================
+    // Output Routing (Multiplexed output based on address)
+    // ==========================================
+    reg [7:0] out_mux;
+    always @(*) begin
+        if (io_read) begin
+            case(io_addr[1:0])
+                2'd0: out_mux = y[0];
+                2'd1: out_mux = y[1];
+                2'd2: out_mux = y[2];
+                default: out_mux = 8'h00;
+            endcase
+        end else begin
+            out_mux = 8'h00;
+        end
+    end
+    
+    assign uo_out = out_mux;
+
+endmodule
