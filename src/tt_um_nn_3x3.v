@@ -53,18 +53,19 @@ module tt_um_nn_3x3 (
     wire signed [11:0] product = x[calc_step] * W[weight_idx];
     
     // Saturation Logic for MAC Addition
-    wire signed [14:0] next_acc_calc = $signed(accumulator) + $signed(product);
-    wire underflow = (accumulator[13] & product[11] & ~next_acc_calc[13]);
-    wire overflow  = (~accumulator[13] & ~product[11] & next_acc_calc[13]);
+    wire signed [13:0] product_ext = $signed({ {2{product[11]}}, product });
+    wire signed [13:0] next_acc_calc = accumulator + product_ext;
+    wire underflow = (accumulator[13] & product[11] & ~next_acc_calc[13]);     
+    wire overflow  = (~accumulator[13] & ~product[11] & next_acc_calc[13]);    
     
     wire signed [13:0] next_acc_safe = overflow  ? 14'h1FFF : 
                                        underflow ? 14'h2000 : 
                                        next_acc_calc[13:0];
-    
-    localparam STATE_IDLE = 2'b00;
-    localparam STATE_MAC  = 2'b01;
-    localparam STATE_RELU = 2'b10;
-    reg [1:0] state;
+                                       
+    // Shifted values for PReLU to avoid linting width warnings
+    wire signed [13:0] s_acc_1 = $signed(accumulator) >>> 1;
+    wire signed [13:0] s_acc_2 = $signed(accumulator) >>> 2;
+    wire signed [13:0] s_acc_3 = $signed(accumulator) >>> 3;
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -143,9 +144,9 @@ module tt_um_nn_3x3 (
                     if (accumulator[13]) begin
                         case (prelu_config[current_neuron])
                             2'b00: y[current_neuron] <= 8'd0; // Standard ReLU
-                            2'b01: y[current_neuron] <= ($signed(accumulator) < -256) ? 8'h80 : ($signed(accumulator) >>> 1); // x/2
-                            2'b10: y[current_neuron] <= ($signed(accumulator) < -512) ? 8'h80 : ($signed(accumulator) >>> 2); // x/4
-                            2'b11: y[current_neuron] <= ($signed(accumulator) < -1024) ? 8'h80 : ($signed(accumulator) >>> 3); // x/8
+                            2'b01: y[current_neuron] <= ($signed(accumulator) < -256) ? 8'h80 : s_acc_1[7:0]; // x/2
+                            2'b10: y[current_neuron] <= ($signed(accumulator) < -512) ? 8'h80 : s_acc_2[7:0]; // x/4
+                            2'b11: y[current_neuron] <= ($signed(accumulator) < -1024) ? 8'h80 : s_acc_3[7:0]; // x/8
                         endcase
                     end else if (accumulator > 127) begin
                         y[current_neuron] <= 8'd127; // Saturation positive     
