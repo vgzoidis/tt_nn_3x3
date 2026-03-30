@@ -14,7 +14,7 @@ module tt_um_nn_3x3 (
     // ==========================================
     // TinyTapeout Pin Configuration
     // ==========================================
-    assign uio_oe  = 8'b0000_0000; // Όλα τα uio ως inputs για τώρα
+    assign uio_oe  = 8'b0000_0000; // Όλα τα uio ως inputs
     assign uio_out = 8'b0;
 
     // Control signals from uio_in
@@ -28,9 +28,9 @@ module tt_um_nn_3x3 (
     reg signed [7:0] x [0:2]; // 3 x 8-bit Inputs
     reg signed [7:0] y [0:2]; // 3 x 8-bit Outputs
     
-    // Programmable Weights and Biases
-    reg signed [7:0] W [0:2][0:2]; // [Neuron][Input]
-    reg signed [7:0] B [0:2];      // Biases
+    // Programmable Weights and Biases (1D arrays are much safer for Yosys ASIC Synthesis)
+    reg signed [7:0] W [0:8]; // Weights
+    reg signed [7:0] B [0:2]; // Biases
 
     // ==========================================
     // The Single Shared MAC Unit Engine
@@ -39,12 +39,14 @@ module tt_um_nn_3x3 (
     reg [3:0] calc_step;
     reg [1:0] current_neuron;
 
+    // Resolve the Weight index dynamically and multiply
+    wire [3:0] weight_idx = (current_neuron * 3) + calc_step;
+    wire signed [15:0] product = x[calc_step] * W[weight_idx];   
+
     localparam STATE_IDLE = 2'b00;
     localparam STATE_MAC  = 2'b01;
     localparam STATE_RELU = 2'b10;
     reg [1:0] state;
-
-    wire signed [15:0] product = x[calc_step] * W[current_neuron][calc_step];   
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -57,9 +59,9 @@ module tt_um_nn_3x3 (
             x[0] <= 0; x[1] <= 0; x[2] <= 0;
             B[0] <= 0; B[1] <= 0; B[2] <= 0;
             
-            W[0][0] <= 0; W[0][1] <= 0; W[0][2] <= 0;
-            W[1][0] <= 0; W[1][1] <= 0; W[1][2] <= 0;
-            W[2][0] <= 0; W[2][1] <= 0; W[2][2] <= 0;
+            W[0] <= 0; W[1] <= 0; W[2] <= 0;
+            W[3] <= 0; W[4] <= 0; W[5] <= 0;
+            W[6] <= 0; W[7] <= 0; W[8] <= 0;
         end else if (ena) begin
             // 1) Input Data Loading (Όταν είμαστε σε IDLE)
             if (state == STATE_IDLE && io_write) begin      
@@ -68,17 +70,15 @@ module tt_um_nn_3x3 (
                     4'd1: x[1] <= ui_in;
                     4'd2: x[2] <= ui_in;
                     
-                    4'd3: W[0][0] <= ui_in;
-                    4'd4: W[0][1] <= ui_in;
-                    4'd5: W[0][2] <= ui_in;
-                    
-                    4'd6: W[1][0] <= ui_in;
-                    4'd7: W[1][1] <= ui_in;
-                    4'd8: W[1][2] <= ui_in;
-                    
-                    4'd9:  W[2][0] <= ui_in;
-                    4'd10: W[2][1] <= ui_in;
-                    4'd11: W[2][2] <= ui_in;
+                    4'd3: W[0] <= ui_in;
+                    4'd4: W[1] <= ui_in;
+                    4'd5: W[2] <= ui_in;
+                    4'd6: W[3] <= ui_in;
+                    4'd7: W[4] <= ui_in;
+                    4'd8: W[5] <= ui_in;
+                    4'd9: W[6] <= ui_in;
+                    4'd10: W[7] <= ui_in;
+                    4'd11: W[8] <= ui_in;
                     
                     4'd12: B[0] <= ui_in;
                     4'd13: B[1] <= ui_in;
@@ -90,7 +90,7 @@ module tt_um_nn_3x3 (
             // 2) FSM Core για υπολογισμούς NN
             case (state)
                 STATE_IDLE: begin
-                    if (io_addr == 4'd15 && !io_write && !io_read) begin // Trigger Start Calculation    
+                    if (io_addr == 4'd15 && !io_write && !io_read) begin // Trigger Start Calculation
                         state <= STATE_MAC;
                         calc_step <= 0;
                         current_neuron <= 0;
@@ -99,7 +99,7 @@ module tt_um_nn_3x3 (
                 end
 
                 STATE_MAC: begin
-                    // Accumulator += X[step] * W[neuron][step]
+                    // Accumulator += X[step] * W[idx]
                     accumulator <= accumulator + product;
 
                     if (calc_step == 2) begin
@@ -115,7 +115,7 @@ module tt_um_nn_3x3 (
                     if (accumulator[15]) begin
                         y[current_neuron] <= 8'd0;
                     end else if (accumulator > 127) begin
-                        y[current_neuron] <= 8'd127; // Saturation 8-bit positive
+                        y[current_neuron] <= 8'd127; // Saturation positive
                     end else begin
                         y[current_neuron] <= accumulator[7:0];
                     end
@@ -129,6 +129,8 @@ module tt_um_nn_3x3 (
                         state <= STATE_MAC;
                     end
                 end
+                
+                default: state <= STATE_IDLE;
             endcase
         end
     end
