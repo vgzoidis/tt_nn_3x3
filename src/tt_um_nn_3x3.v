@@ -67,6 +67,11 @@ module tt_um_nn_3x3 (
     wire signed [13:0] s_acc_2 = $signed(accumulator) >>> 2;
     wire signed [13:0] s_acc_3 = $signed(accumulator) >>> 3;
 
+    localparam STATE_IDLE = 2'b00;
+    localparam STATE_MAC  = 2'b01;
+    localparam STATE_RELU = 2'b10;
+    reg [1:0] state;
+
     always @(posedge clk) begin
         if (!rst_n) begin
             state <= STATE_IDLE;
