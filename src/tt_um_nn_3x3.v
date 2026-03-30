@@ -31,24 +31,35 @@ module tt_um_nn_3x3 (
     // ==========================================
     // Registers & Storage (Optimized for Tile area limits)
     // ==========================================
-    reg signed [4:0] x [0:2]; // 3 x 5-bit Inputs
+    reg signed [5:0] x [0:2]; // 3 x 6-bit Inputs
     reg signed [7:0] y [0:2]; // 3 x 8-bit Outputs
 
-    // Programmable Weights and Biases (Reduced to 5-bit to fit density)
-    reg signed [4:0] W [0:8]; // Weights (5-bit: -16 to +15)
+    // Programmable Weights and Biases (6-bit to fit density)
+    reg signed [5:0] W [0:8]; // Weights (6-bit: -32 to +31)
     reg signed [7:0] B [0:2]; // Biases (8-bit)
-    reg [1:0] prelu_config;   // 00: standard ReLU, 01: x/2, 10: x/4, 11: x/8
+    reg [1:0] prelu_config [0:2]; // Per-neuron config (00: standard ReLU, 01: x/2, 10: x/4, 11: x/8)
 
     // ==========================================
     // Single Shared MAC Unit Engine
     // ==========================================
-    reg signed [11:0] accumulator; // 12-bit is enough for 5x5 + 5x5 + 5x5 + bias
+    // 6-bit x 6-bit = 12-bit product. 
+    // 3 MACs + 8-bit bias + safety logic = 14-bit accumulator needed
+    reg signed [13:0] accumulator; 
     reg [1:0] calc_step;
     reg [1:0] current_neuron;
 
     // Resolve the Weight index dynamically and multiply
     wire [3:0] weight_idx = ({2'b00, current_neuron} * 4'd3) + {2'b00, calc_step};
-    wire signed [9:0] product = x[calc_step] * W[weight_idx];
+    wire signed [11:0] product = x[calc_step] * W[weight_idx];
+    
+    // Saturation Logic for MAC Addition
+    wire signed [14:0] next_acc_calc = $signed(accumulator) + $signed(product);
+    wire underflow = (accumulator[13] & product[11] & ~next_acc_calc[13]);
+    wire overflow  = (~accumulator[13] & ~product[11] & next_acc_calc[13]);
+    
+    wire signed [13:0] next_acc_safe = overflow  ? 14'h1FFF : 
+                                       underflow ? 14'h2000 : 
+                                       next_acc_calc[13:0];
     
     localparam STATE_IDLE = 2'b00;
     localparam STATE_MAC  = 2'b01;
@@ -69,30 +80,37 @@ module tt_um_nn_3x3 (
             W[0] <= 0; W[1] <= 0; W[2] <= 0;
             W[3] <= 0; W[4] <= 0; W[5] <= 0;
             W[6] <= 0; W[7] <= 0; W[8] <= 0;
-            prelu_config <= 2'b00;
+            
+            prelu_config[0] <= 2'b00;
+            prelu_config[1] <= 2'b00;
+            prelu_config[2] <= 2'b00;
 
         end else if (ena) begin
             // 1) Input Data Loading (When IDLE)
             if (state == STATE_IDLE && io_write) begin
                 case (io_addr)
-                    4'd0: x[0] <= ui_in[4:0];
-                    4'd1: x[1] <= ui_in[4:0];
-                    4'd2: x[2] <= ui_in[4:0];
+                    4'd0: x[0] <= ui_in[5:0];
+                    4'd1: x[1] <= ui_in[5:0];
+                    4'd2: x[2] <= ui_in[5:0];
 
-                    4'd3: W[0] <= ui_in[4:0];
-                    4'd4: W[1] <= ui_in[4:0];
-                    4'd5: W[2] <= ui_in[4:0];
-                    4'd6: W[3] <= ui_in[4:0];
-                    4'd7: W[4] <= ui_in[4:0];
-                    4'd8: W[5] <= ui_in[4:0];
-                    4'd9: W[6] <= ui_in[4:0];
-                    4'd10: W[7] <= ui_in[4:0];
-                    4'd11: W[8] <= ui_in[4:0];
+                    4'd3: W[0] <= ui_in[5:0];
+                    4'd4: W[1] <= ui_in[5:0];
+                    4'd5: W[2] <= ui_in[5:0];
+                    4'd6: W[3] <= ui_in[5:0];
+                    4'd7: W[4] <= ui_in[5:0];
+                    4'd8: W[5] <= ui_in[5:0];
+                    4'd9: W[6] <= ui_in[5:0];
+                    4'd10: W[7] <= ui_in[5:0];
+                    4'd11: W[8] <= ui_in[5:0];
 
                     4'd12: B[0] <= ui_in;
                     4'd13: B[1] <= ui_in;
                     4'd14: B[2] <= ui_in;
-                    4'd15: prelu_config <= ui_in[1:0];
+                    4'd15: begin
+                        prelu_config[0] <= ui_in[1:0];
+                        prelu_config[1] <= ui_in[3:2];
+                        prelu_config[2] <= ui_in[5:4];
+                    end
                     default: ;
                 endcase
             end
@@ -104,13 +122,13 @@ module tt_um_nn_3x3 (
                         state <= STATE_MAC;
                         calc_step <= 0;
                         current_neuron <= 0;
-                        accumulator <= $signed({ {4{B[0][7]}}, B[0] }); // Load initial Bias
+                        accumulator <= $signed({ {6{B[0][7]}}, B[0] }); // Load initial Bias
                     end
                 end
 
                 STATE_MAC: begin
-                    // Accumulator += X[step] * W[idx]
-                    accumulator <= accumulator + $signed({ {2{product[9]}}, product });
+                    // Accumulator saturating addition
+                    accumulator <= next_acc_safe;
 
                     if (calc_step == 2) begin
                         state <= STATE_RELU;
@@ -122,12 +140,12 @@ module tt_um_nn_3x3 (
 
                 STATE_RELU: begin
                     // Programmable PReLU Activation
-                    if (accumulator[11]) begin
-                        case (prelu_config)
+                    if (accumulator[13]) begin
+                        case (prelu_config[current_neuron])
                             2'b00: y[current_neuron] <= 8'd0; // Standard ReLU
                             2'b01: y[current_neuron] <= ($signed(accumulator) < -256) ? 8'h80 : ($signed(accumulator) >>> 1); // x/2
                             2'b10: y[current_neuron] <= ($signed(accumulator) < -512) ? 8'h80 : ($signed(accumulator) >>> 2); // x/4
-                            2'b11: y[current_neuron] <= ($signed(accumulator) >>> 3); // x/8
+                            2'b11: y[current_neuron] <= ($signed(accumulator) < -1024) ? 8'h80 : ($signed(accumulator) >>> 3); // x/8
                         endcase
                     end else if (accumulator > 127) begin
                         y[current_neuron] <= 8'd127; // Saturation positive     
@@ -140,7 +158,7 @@ module tt_um_nn_3x3 (
                         state <= STATE_IDLE; // End of network
                     end else begin
                         current_neuron <= current_neuron + 1;
-                        accumulator <= $signed({ {4{B[current_neuron + 1][7]}}, B[current_neuron + 1] }); // Pre-load next Bias
+                        accumulator <= $signed({ {6{B[current_neuron + 1][7]}}, B[current_neuron + 1] }); // Pre-load next Bias
                         state <= STATE_MAC;
                     end
                 end
