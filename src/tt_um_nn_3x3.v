@@ -43,7 +43,7 @@ module tt_um_nn_3x3 (
     reg [1:0] current_neuron;
 
     // Resolve the Weight index dynamically and multiply
-    wire [3:0] weight_idx = (current_neuron * 3) + calc_step;
+    wire [3:0] weight_idx = ({2'b00, current_neuron} * 4'd3) + {2'b00, calc_step};
     wire signed [15:0] product = x[calc_step] * W[weight_idx];   
 
     localparam STATE_IDLE = 2'b00;
