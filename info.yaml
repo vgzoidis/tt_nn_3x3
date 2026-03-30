@@ -1,7 +1,7 @@
 # Tiny Tapeout project information
 project:
   title:        "3x3 Hardware Neural Network (Programmable TPU)"
-  author:       "Vasilis Zoidis"
+  author:       "Vasilis Zoidis and Savvas Tzanetis"
   discord:      ""
   description:  "A programmable sequential 3-neuron hardware NN with 3 inputs and ReLU using a shared MAC unit."
   language:     "Verilog"

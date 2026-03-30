@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: © 2026 Zoidis Vasileios
+# SPDX-FileCopyrightText: © 2026 Git Happens for Tiny Tapeout
 # SPDX-License-Identifier: Apache-2.0
 
 import cocotb

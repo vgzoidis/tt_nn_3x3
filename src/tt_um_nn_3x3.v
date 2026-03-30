@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 Zoidis Vasileios
+ * Copyright (c) 2026 Git Happens for Tiny Tapeout
  * SPDX-License-Identifier: Apache-2.0
  */
 
