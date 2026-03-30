@@ -6,8 +6,8 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles
 
 
-# NOTE: The tests should use -16 to +15 weights
-#  to fit the 5-bit weights array (ui_in[4:0])
+# NOTE: The tests should use -32 to +31 weights
+#  to fit the 6-bit weights array (ui_in[5:0])
 
 @cocotb.test()
 async def test_nn_project(dut):
