@@ -21,6 +21,9 @@ module tt_um_nn_3x3 (
     wire [3:0] io_addr  = uio_in[3:0]; // 0..14=Write Addr, 15=Start Calc
     wire       io_write = uio_in[4];   // 1=Write to selected address
     wire       io_read  = uio_in[5];   // 1=Read outputs
+    
+    // Suppress unused signals warning
+    wire _unused = &{1'b0, uio_in[7:6], 1'b0};
 
     // ==========================================
     // Registers & Storage
@@ -36,7 +39,7 @@ module tt_um_nn_3x3 (
     // The Single Shared MAC Unit Engine
     // ==========================================
     reg signed [15:0] accumulator;
-    reg [3:0] calc_step;
+    reg [1:0] calc_step;
     reg [1:0] current_neuron;
 
     // Resolve the Weight index dynamically and multiply
@@ -94,7 +97,7 @@ module tt_um_nn_3x3 (
                         state <= STATE_MAC;
                         calc_step <= 0;
                         current_neuron <= 0;
-                        accumulator <= B[0]; // Φόρτωση αρχικού Bias
+                        accumulator <= $signed({ {8{B[0][7]}}, B[0] }); // Φόρτωση αρχικού Bias
                     end
                 end
 
@@ -125,7 +128,7 @@ module tt_um_nn_3x3 (
                         state <= STATE_IDLE; // Τέλος δικτύου
                     end else begin
                         current_neuron <= current_neuron + 1;
-                        accumulator <= B[current_neuron + 1]; // Pre-load next Bias
+                        accumulator <= $signed({ {8{B[current_neuron + 1][7]}}, B[current_neuron + 1] }); // Pre-load next Bias
                         state <= STATE_MAC;
                     end
                 end
