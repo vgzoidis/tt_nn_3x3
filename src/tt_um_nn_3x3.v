@@ -40,22 +40,48 @@ module tt_um_nn_3x3 (
     reg [1:0] prelu_config;   // 00: standard ReLU, 01: x/2, 10: x/4, 11: x/8
 
     // ==========================================
-    // Three Parallel MAC Units
+    // 3 Parallel MAC Engine (Ultra Area-Optimized)
     // ==========================================
-    reg signed [11:0] acc [0:2];     // 3 x 12-bit accumulators (one per neuron)
-    reg [1:0] calc_step;              // Steps 0-2 for each input element
+    reg signed [10:0] acc [0:2]; // 11-bit is optimal max value +895 / -1024
+    reg [1:0] calc_step;         // Steps 0-2 for each input element
 
-    // Exactly 3 multipliers (one per neuron) time-multiplexed across calc_step
+    // Exact 3 multipliers time-multiplexed
     wire signed [9:0] prod_0 = x[calc_step] * W[0 + calc_step];
     wire signed [9:0] prod_1 = x[calc_step] * W[3 + calc_step];
     wire signed [9:0] prod_2 = x[calc_step] * W[6 + calc_step];
 
-    // Sign-extended products for accumulation
-    wire signed [11:0] prod_ext [0:2];
-    assign prod_ext[0] = $signed({{2{prod_0[9]}}, prod_0});
-    assign prod_ext[1] = $signed({{2{prod_1[9]}}, prod_1});
-    assign prod_ext[2] = $signed({{2{prod_2[9]}}, prod_2});
+    // Sign extend products by 1 bit to match 11-bit
+    wire signed [10:0] prod_ext [0:2];
+    assign prod_ext[0] = $signed({prod_0[9], prod_0});
+    assign prod_ext[1] = $signed({prod_1[9], prod_1});
+    assign prod_ext[2] = $signed({prod_2[9], prod_2});
+    
+    // PReLU Combinational Logic: Replaces 9 magnitude comparators with 0-cost bitwise checks!
+    function [7:0] fast_prelu;
+        input signed [10:0] a;
+        input [1:0] cfg;
+        reg is_neg, sat_pos, sat_neg_x2, sat_neg_x4;
+        begin
+            is_neg = a[10];
+            sat_pos = ~is_neg & (|a[9:7]);    // equivalent to: a > 127
+            sat_neg_x2 = is_neg & (~&a[9:8]); // equivalent to: a < -256
+            sat_neg_x4 = is_neg & (~a[9]);    // equivalent to: a < -512
 
+            if (is_neg) begin
+                case (cfg)
+                    2'b00: fast_prelu = 8'd0;
+                    2'b01: fast_prelu = sat_neg_x2 ? 8'h80 : ($signed(a) >>> 1);
+                    2'b10: fast_prelu = sat_neg_x4 ? 8'h80 : ($signed(a) >>> 2);
+                    2'b11: fast_prelu = ($signed(a) >>> 3);
+                endcase
+            end else if (sat_pos) begin
+                fast_prelu = 8'd127;
+            end else begin
+                fast_prelu = a[7:0];
+            end
+        end
+    endfunction
+    
     localparam STATE_IDLE = 2'b00;
     localparam STATE_MAC  = 2'b01;
     localparam STATE_RELU = 2'b10;
@@ -103,21 +129,21 @@ module tt_um_nn_3x3 (
                 endcase
             end
 
-            // 2) FSM Core for NN calculations with 3 Parallel MACs
+            // 2) FSM Core for NN calculations
             case (state)
                 STATE_IDLE: begin
                     if (io_addr == 4'd15 && !io_write && !io_read) begin
                         state <= STATE_MAC;
                         calc_step <= 0;
-                        // Pre-load biases into accumulators
-                        acc[0] <= $signed({ {4{B[0][7]}}, B[0] });
-                        acc[1] <= $signed({ {4{B[1][7]}}, B[1] });
-                        acc[2] <= $signed({ {4{B[2][7]}}, B[2] });
+                        // Load Biases (sign extended to 11 bits)
+                        acc[0] <= $signed({ {3{B[0][7]}}, B[0] });
+                        acc[1] <= $signed({ {3{B[1][7]}}, B[1] });
+                        acc[2] <= $signed({ {3{B[2][7]}}, B[2] });
                     end
                 end
 
                 STATE_MAC: begin
-                    // All 3 MACs compute in parallel: acc[i] += x[calc_step] * W[i*3 + calc_step]
+                    // Parallel accumulation for all 3 neurons
                     acc[0] <= acc[0] + prod_ext[0];
                     acc[1] <= acc[1] + prod_ext[1];
                     acc[2] <= acc[2] + prod_ext[2];
@@ -131,50 +157,11 @@ module tt_um_nn_3x3 (
                 end
 
                 STATE_RELU: begin
-                    // Apply PReLU activation function to all 3 neurons in parallel
-                    // Neuron 0
-                    if (acc[0][11]) begin
-                        case (prelu_config)
-                            2'b00: y[0] <= 8'd0;
-                            2'b01: y[0] <= ($signed(acc[0]) < -256) ? 8'h80 : ($signed(acc[0]) >>> 1);
-                            2'b10: y[0] <= ($signed(acc[0]) < -512) ? 8'h80 : ($signed(acc[0]) >>> 2);
-                            2'b11: y[0] <= ($signed(acc[0]) >>> 3);
-                        endcase
-                    end else if (acc[0] > 127) begin
-                        y[0] <= 8'd127;
-                    end else begin
-                        y[0] <= acc[0][7:0];
-                    end
-
-                    // Neuron 1
-                    if (acc[1][11]) begin
-                        case (prelu_config)
-                            2'b00: y[1] <= 8'd0;
-                            2'b01: y[1] <= ($signed(acc[1]) < -256) ? 8'h80 : ($signed(acc[1]) >>> 1);
-                            2'b10: y[1] <= ($signed(acc[1]) < -512) ? 8'h80 : ($signed(acc[1]) >>> 2);
-                            2'b11: y[1] <= ($signed(acc[1]) >>> 3);
-                        endcase
-                    end else if (acc[1] > 127) begin
-                        y[1] <= 8'd127;
-                    end else begin
-                        y[1] <= acc[1][7:0];
-                    end
-
-                    // Neuron 2
-                    if (acc[2][11]) begin
-                        case (prelu_config)
-                            2'b00: y[2] <= 8'd0;
-                            2'b01: y[2] <= ($signed(acc[2]) < -256) ? 8'h80 : ($signed(acc[2]) >>> 1);
-                            2'b10: y[2] <= ($signed(acc[2]) < -512) ? 8'h80 : ($signed(acc[2]) >>> 2);
-                            2'b11: y[2] <= ($signed(acc[2]) >>> 3);
-                        endcase
-                    end else if (acc[2] > 127) begin
-                        y[2] <= 8'd127;
-                    end else begin
-                        y[2] <= acc[2][7:0];
-                    end
-
-                    state <= STATE_IDLE;
+                    // Leverage the combinatorial bitwise PReLU function for all 3 neurons
+                    y[0] <= fast_prelu(acc[0], prelu_config);
+                    y[1] <= fast_prelu(acc[1], prelu_config);
+                    y[2] <= fast_prelu(acc[2], prelu_config);
+                    state <= STATE_IDLE; // Done
                 end
 
                 default: state <= STATE_IDLE;
