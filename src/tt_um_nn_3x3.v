@@ -40,15 +40,22 @@ module tt_um_nn_3x3 (
     reg [1:0] prelu_config;   // 00: standard ReLU, 01: x/2, 10: x/4, 11: x/8
 
     // ==========================================
-    // The Single Shared MAC Unit Engine
+    // Three Parallel MAC Units
     // ==========================================
-    reg signed [11:0] accumulator; // 12-bit is enough for 5x5 + 5x5 + 5x5 + bias
-    reg [1:0] calc_step;
-    reg [1:0] current_neuron;
+    reg signed [11:0] acc [0:2];     // 3 x 12-bit accumulators (one per neuron)
+    reg [1:0] calc_step;              // Steps 0-2 for each input element
 
-    // Resolve the Weight index dynamically and multiply
-    wire [3:0] weight_idx = ({2'b00, current_neuron} * 4'd3) + {2'b00, calc_step};
-    wire signed [9:0] product = x[calc_step] * W[weight_idx];
+    // Exactly 3 multipliers (one per neuron) time-multiplexed across calc_step
+    wire signed [9:0] prod_0 = x[calc_step] * W[0 + calc_step];
+    wire signed [9:0] prod_1 = x[calc_step] * W[3 + calc_step];
+    wire signed [9:0] prod_2 = x[calc_step] * W[6 + calc_step];
+
+    // Sign-extended products for accumulation
+    wire signed [11:0] prod_ext [0:2];
+    assign prod_ext[0] = $signed({{2{prod_0[9]}}, prod_0});
+    assign prod_ext[1] = $signed({{2{prod_1[9]}}, prod_1});
+    assign prod_ext[2] = $signed({{2{prod_2[9]}}, prod_2});
+
     localparam STATE_IDLE = 2'b00;
     localparam STATE_MAC  = 2'b01;
     localparam STATE_RELU = 2'b10;
@@ -58,8 +65,6 @@ module tt_um_nn_3x3 (
         if (!rst_n) begin
             state <= STATE_IDLE;
             calc_step <= 0;
-            current_neuron <= 0;
-            accumulator <= 0;
             
             y[0] <= 0; y[1] <= 0; y[2] <= 0;
             x[0] <= 0; x[1] <= 0; x[2] <= 0;
@@ -69,6 +74,8 @@ module tt_um_nn_3x3 (
             W[3] <= 0; W[4] <= 0; W[5] <= 0;
             W[6] <= 0; W[7] <= 0; W[8] <= 0;
             prelu_config <= 2'b00;
+            
+            acc[0] <= 0; acc[1] <= 0; acc[2] <= 0;
 
         end else if (ena) begin
             // 1) Input Data Loading (When IDLE)
@@ -96,20 +103,24 @@ module tt_um_nn_3x3 (
                 endcase
             end
 
-            // 2) FSM Core for NN calculations
+            // 2) FSM Core for NN calculations with 3 Parallel MACs
             case (state)
                 STATE_IDLE: begin
                     if (io_addr == 4'd15 && !io_write && !io_read) begin
                         state <= STATE_MAC;
                         calc_step <= 0;
-                        current_neuron <= 0;
-                        accumulator <= $signed({ {4{B[0][7]}}, B[0] }); // Load initial Bias
+                        // Pre-load biases into accumulators
+                        acc[0] <= $signed({ {4{B[0][7]}}, B[0] });
+                        acc[1] <= $signed({ {4{B[1][7]}}, B[1] });
+                        acc[2] <= $signed({ {4{B[2][7]}}, B[2] });
                     end
                 end
 
                 STATE_MAC: begin
-                    // Accumulator += X[step] * W[idx]
-                    accumulator <= accumulator + $signed({ {2{product[9]}}, product });
+                    // All 3 MACs compute in parallel: acc[i] += x[calc_step] * W[i*3 + calc_step]
+                    acc[0] <= acc[0] + prod_ext[0];
+                    acc[1] <= acc[1] + prod_ext[1];
+                    acc[2] <= acc[2] + prod_ext[2];
 
                     if (calc_step == 2) begin
                         state <= STATE_RELU;
@@ -120,28 +131,50 @@ module tt_um_nn_3x3 (
                 end
 
                 STATE_RELU: begin
-                    // Programmable PReLU Activation
-                    if (accumulator[11]) begin
+                    // Apply PReLU activation function to all 3 neurons in parallel
+                    // Neuron 0
+                    if (acc[0][11]) begin
                         case (prelu_config)
-                            2'b00: y[current_neuron] <= 8'd0; // Standard ReLU
-                            2'b01: y[current_neuron] <= ($signed(accumulator) < -256) ? 8'h80 : ($signed(accumulator) >>> 1); // x/2
-                            2'b10: y[current_neuron] <= ($signed(accumulator) < -512) ? 8'h80 : ($signed(accumulator) >>> 2); // x/4
-                            2'b11: y[current_neuron] <= ($signed(accumulator) >>> 3); // x/8
+                            2'b00: y[0] <= 8'd0;
+                            2'b01: y[0] <= ($signed(acc[0]) < -256) ? 8'h80 : ($signed(acc[0]) >>> 1);
+                            2'b10: y[0] <= ($signed(acc[0]) < -512) ? 8'h80 : ($signed(acc[0]) >>> 2);
+                            2'b11: y[0] <= ($signed(acc[0]) >>> 3);
                         endcase
-                    end else if (accumulator > 127) begin
-                        y[current_neuron] <= 8'd127; // Saturation positive     
+                    end else if (acc[0] > 127) begin
+                        y[0] <= 8'd127;
                     end else begin
-                        y[current_neuron] <= accumulator[7:0];
+                        y[0] <= acc[0][7:0];
                     end
 
-                    // Check if more neurons to calculate
-                    if (current_neuron == 2) begin
-                        state <= STATE_IDLE; // End of network
+                    // Neuron 1
+                    if (acc[1][11]) begin
+                        case (prelu_config)
+                            2'b00: y[1] <= 8'd0;
+                            2'b01: y[1] <= ($signed(acc[1]) < -256) ? 8'h80 : ($signed(acc[1]) >>> 1);
+                            2'b10: y[1] <= ($signed(acc[1]) < -512) ? 8'h80 : ($signed(acc[1]) >>> 2);
+                            2'b11: y[1] <= ($signed(acc[1]) >>> 3);
+                        endcase
+                    end else if (acc[1] > 127) begin
+                        y[1] <= 8'd127;
                     end else begin
-                        current_neuron <= current_neuron + 1;
-                        accumulator <= $signed({ {4{B[current_neuron + 1][7]}}, B[current_neuron + 1] }); // Pre-load next Bias
-                        state <= STATE_MAC;
+                        y[1] <= acc[1][7:0];
                     end
+
+                    // Neuron 2
+                    if (acc[2][11]) begin
+                        case (prelu_config)
+                            2'b00: y[2] <= 8'd0;
+                            2'b01: y[2] <= ($signed(acc[2]) < -256) ? 8'h80 : ($signed(acc[2]) >>> 1);
+                            2'b10: y[2] <= ($signed(acc[2]) < -512) ? 8'h80 : ($signed(acc[2]) >>> 2);
+                            2'b11: y[2] <= ($signed(acc[2]) >>> 3);
+                        endcase
+                    end else if (acc[2] > 127) begin
+                        y[2] <= 8'd127;
+                    end else begin
+                        y[2] <= acc[2][7:0];
+                    end
+
+                    state <= STATE_IDLE;
                 end
 
                 default: state <= STATE_IDLE;
