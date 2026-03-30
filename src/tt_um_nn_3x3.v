@@ -1,4 +1,4 @@
-default_nettype none
+`default_nettype none
 
 module tt_um_nn_3x3 (
     input  wire [7:0] ui_in,    // Dedicated inputs - 8-bit data in
