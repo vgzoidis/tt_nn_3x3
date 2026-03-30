@@ -63,9 +63,9 @@ module tt_um_nn_3x3 (
                                        next_acc_calc[13:0];
                                        
     // Shifted values for PReLU to avoid linting width warnings
-    wire signed [13:0] s_acc_1 = $signed(accumulator) >>> 1;
-    wire signed [13:0] s_acc_2 = $signed(accumulator) >>> 2;
-    wire signed [13:0] s_acc_3 = $signed(accumulator) >>> 3;
+    wire [7:0] s_acc_1 = accumulator[8:1];
+    wire [7:0] s_acc_2 = accumulator[9:2];
+    wire [7:0] s_acc_3 = accumulator[10:3];
 
     localparam STATE_IDLE = 2'b00;
     localparam STATE_MAC  = 2'b01;
@@ -149,9 +149,9 @@ module tt_um_nn_3x3 (
                     if (accumulator[13]) begin
                         case (prelu_config[current_neuron])
                             2'b00: y[current_neuron] <= 8'd0; // Standard ReLU
-                            2'b01: y[current_neuron] <= ($signed(accumulator) < -256) ? 8'h80 : s_acc_1[7:0]; // x/2
-                            2'b10: y[current_neuron] <= ($signed(accumulator) < -512) ? 8'h80 : s_acc_2[7:0]; // x/4
-                            2'b11: y[current_neuron] <= ($signed(accumulator) < -1024) ? 8'h80 : s_acc_3[7:0]; // x/8
+                            2'b01: y[current_neuron] <= ($signed(accumulator) < -256) ? 8'h80 : s_acc_1; // x/2
+                            2'b10: y[current_neuron] <= ($signed(accumulator) < -512) ? 8'h80 : s_acc_2; // x/4
+                            2'b11: y[current_neuron] <= ($signed(accumulator) < -1024) ? 8'h80 : s_acc_3; // x/8
                         endcase
                     end else if (accumulator > 127) begin
                         y[current_neuron] <= 8'd127; // Saturation positive     
