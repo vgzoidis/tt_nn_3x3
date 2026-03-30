@@ -26,26 +26,25 @@ module tt_um_nn_3x3 (
     wire _unused = &{1'b0, uio_in[7:6], 1'b0};
 
     // ==========================================
-    // Registers & Storage
+    // Registers & Storage (Optimized for 1x1 Tile area limits)
     // ==========================================
-    reg signed [7:0] x [0:2]; // 3 x 8-bit Inputs
+    reg signed [4:0] x [0:2]; // 3 x 5-bit Inputs
     reg signed [7:0] y [0:2]; // 3 x 8-bit Outputs
-    
-    // Programmable Weights and Biases (1D arrays are much safer for Yosys ASIC Synthesis)
-    reg signed [7:0] W [0:8]; // Weights
-    reg signed [7:0] B [0:2]; // Biases
+
+    // Programmable Weights and Biases (Reduced to 5-bit to fit density)
+    reg signed [4:0] W [0:8]; // Weights (5-bit: -16 to +15)
+    reg signed [7:0] B [0:2]; // Biases (8-bit)
 
     // ==========================================
     // The Single Shared MAC Unit Engine
     // ==========================================
-    reg signed [15:0] accumulator;
+    reg signed [11:0] accumulator; // 12-bit is enough for 5x5 + 5x5 + 5x5 + bias
     reg [1:0] calc_step;
     reg [1:0] current_neuron;
 
     // Resolve the Weight index dynamically and multiply
     wire [3:0] weight_idx = ({2'b00, current_neuron} * 4'd3) + {2'b00, calc_step};
-    wire signed [15:0] product = x[calc_step] * W[weight_idx];   
-
+    wire signed [9:0] product = x[calc_step] * W[weight_idx];
     localparam STATE_IDLE = 2'b00;
     localparam STATE_MAC  = 2'b01;
     localparam STATE_RELU = 2'b10;
@@ -67,22 +66,22 @@ module tt_um_nn_3x3 (
             W[6] <= 0; W[7] <= 0; W[8] <= 0;
         end else if (ena) begin
             // 1) Input Data Loading (Όταν είμαστε σε IDLE)
-            if (state == STATE_IDLE && io_write) begin      
+            if (state == STATE_IDLE && io_write) begin
                 case (io_addr)
-                    4'd0: x[0] <= ui_in;
-                    4'd1: x[1] <= ui_in;
-                    4'd2: x[2] <= ui_in;
-                    
-                    4'd3: W[0] <= ui_in;
-                    4'd4: W[1] <= ui_in;
-                    4'd5: W[2] <= ui_in;
-                    4'd6: W[3] <= ui_in;
-                    4'd7: W[4] <= ui_in;
-                    4'd8: W[5] <= ui_in;
-                    4'd9: W[6] <= ui_in;
-                    4'd10: W[7] <= ui_in;
-                    4'd11: W[8] <= ui_in;
-                    
+                    4'd0: x[0] <= ui_in[4:0];
+                    4'd1: x[1] <= ui_in[4:0];
+                    4'd2: x[2] <= ui_in[4:0];
+
+                    4'd3: W[0] <= ui_in[4:0];
+                    4'd4: W[1] <= ui_in[4:0];
+                    4'd5: W[2] <= ui_in[4:0];
+                    4'd6: W[3] <= ui_in[4:0];
+                    4'd7: W[4] <= ui_in[4:0];
+                    4'd8: W[5] <= ui_in[4:0];
+                    4'd9: W[6] <= ui_in[4:0];
+                    4'd10: W[7] <= ui_in[4:0];
+                    4'd11: W[8] <= ui_in[4:0];
+
                     4'd12: B[0] <= ui_in;
                     4'd13: B[1] <= ui_in;
                     4'd14: B[2] <= ui_in;
@@ -97,13 +96,13 @@ module tt_um_nn_3x3 (
                         state <= STATE_MAC;
                         calc_step <= 0;
                         current_neuron <= 0;
-                        accumulator <= $signed({ {8{B[0][7]}}, B[0] }); // Φόρτωση αρχικού Bias
+                        accumulator <= $signed({ {4{B[0][7]}}, B[0] }); // Φόρτωση αρχικού Bias
                     end
                 end
 
                 STATE_MAC: begin
                     // Accumulator += X[step] * W[idx]
-                    accumulator <= accumulator + product;
+                    accumulator <= accumulator + $signed({ {2{product[9]}}, product });
 
                     if (calc_step == 2) begin
                         state <= STATE_RELU;
@@ -115,10 +114,10 @@ module tt_um_nn_3x3 (
 
                 STATE_RELU: begin
                     // ReLU Activation (Αν το MSB είναι 1 (αρνητικό), τότε 0. Αλλιώς saturate αν ξεπερνά τα όρια)
-                    if (accumulator[15]) begin
+                    if (accumulator[11]) begin
                         y[current_neuron] <= 8'd0;
                     end else if (accumulator > 127) begin
-                        y[current_neuron] <= 8'd127; // Saturation positive
+                        y[current_neuron] <= 8'd127; // Saturation positive     
                     end else begin
                         y[current_neuron] <= accumulator[7:0];
                     end
@@ -128,9 +127,7 @@ module tt_um_nn_3x3 (
                         state <= STATE_IDLE; // Τέλος δικτύου
                     end else begin
                         current_neuron <= current_neuron + 1;
-                        accumulator <= $signed({ {8{B[current_neuron + 1][7]}}, B[current_neuron + 1] }); // Pre-load next Bias
-                        state <= STATE_MAC;
-                    end
+                        accumulator <= $signed({ {4{B[current_neuron + 1][7]}}, B[current_neuron + 1] }); // Pre-load next Bias
                 end
                 
                 default: state <= STATE_IDLE;
