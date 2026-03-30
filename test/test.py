@@ -1,9 +1,13 @@
-# SPDX-FileCopyrightText: © 2024 Tiny Tapeout
+# SPDX-FileCopyrightText: © 2026 Zoidis Vasileios
 # SPDX-License-Identifier: Apache-2.0
 
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles
+
+
+# NOTE: The tests should use -16 to +15 weights
+#  to fit the 5-bit weights array (ui_in[4:0])
 
 @cocotb.test()
 async def test_nn_project(dut):
@@ -78,5 +82,52 @@ async def test_nn_project(dut):
     await ClockCycles(dut.clk, 1)
     assert dut.uo_out.value == 2, f"Y[2] was {dut.uo_out.value}, expected 2"
 
-    dut._log.info("All Programmable Matrix tests passed successfully!")
+    dut._log.info("--- Edge Case 1: ReLU Negative Clamping ---")
+    # Load inputs that will produce a strongly negative MAC result
+    neg_inputs = [5, 5, 5]
+    for i, x in enumerate(neg_inputs):
+        dut.ui_in.value = to_8bit(x)
+        dut.uio_in.value = 16 + i
+        await ClockCycles(dut.clk, 1)
+    
+    # Load extremely negative weights for Neuron 0
+    dut.ui_in.value = to_8bit(-10)
+    for i in range(3):
+        dut.uio_in.value = 16 + 3 + i
+        await ClockCycles(dut.clk, 1)
+        
+    dut.uio_in.value = 15 # Start Calc
+    await ClockCycles(dut.clk, 1)
+    dut.uio_in.value = 0
+    await ClockCycles(dut.clk, 20)
+    
+    dut.uio_in.value = 32 + 0 # Read Y[0]
+    await ClockCycles(dut.clk, 1)
+    # MAC would be (5*-10)*3 + 5 = -145. ReLU should clamp to 0.
+    assert dut.uo_out.value == 0, f"ReLU failed to clamp negative value! Y[0] was {dut.uo_out.value}"
+
+    dut._log.info("--- Edge Case 2: Positive Saturation ---")
+    # Load inputs that will produce a massively positive MAC result (>127 max)
+    pos_inputs = [15, 15, 15]
+    for i, x in enumerate(pos_inputs):
+        dut.ui_in.value = to_8bit(x)
+        dut.uio_in.value = 16 + i
+        await ClockCycles(dut.clk, 1)
+    
+    dut.ui_in.value = to_8bit(15) # Max positive weight
+    for i in range(3):
+        dut.uio_in.value = 16 + 3 + i
+        await ClockCycles(dut.clk, 1)
+
+    dut.uio_in.value = 15 # Start Calc
+    await ClockCycles(dut.clk, 1)
+    dut.uio_in.value = 0
+    await ClockCycles(dut.clk, 20)
+
+    dut.uio_in.value = 32 + 0 # Read Y[0]
+    await ClockCycles(dut.clk, 1)
+    # MAC would be (15*15)*3 + 5 = 680. Must saturate to 127 (0x7F).
+    assert dut.uo_out.value == 127, f"Saturation failed! Y[0] was {dut.uo_out.value}"
+
+    dut._log.info("All Programmable Matrix and Edge Case tests passed successfully!")
 
