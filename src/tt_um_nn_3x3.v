@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2026 Zoidis Vasileios
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 `default_nettype none
 
 module tt_um_nn_3x3 (
@@ -14,19 +19,17 @@ module tt_um_nn_3x3 (
     // ==========================================
     // TinyTapeout Pin Configuration
     // ==========================================
-    assign uio_oe  = 8'b0000_0000; // Όλα τα uio ως inputs
+    assign uio_oe  = 8'b0000_0000;
     assign uio_out = 8'b0;
 
-    // Control signals from uio_in
     wire [3:0] io_addr  = uio_in[3:0]; // 0..14=Write Addr, 15=Start Calc
     wire       io_write = uio_in[4];   // 1=Write to selected address
     wire       io_read  = uio_in[5];   // 1=Read outputs
-    
-    // Suppress unused signals warning
-    wire _unused = &{1'b0, uio_in[7:6], 1'b0};
+
+    wire _unused = &{1'b0, uio_in[7:6], 1'b0}; // Suppress unused signals warning
 
     // ==========================================
-    // Registers & Storage (Optimized for 1x1 Tile area limits)
+    // Registers & Storage (Optimized for Tile area limits)
     // ==========================================
     reg signed [4:0] x [0:2]; // 3 x 5-bit Inputs
     reg signed [7:0] y [0:2]; // 3 x 8-bit Outputs
@@ -64,8 +67,9 @@ module tt_um_nn_3x3 (
             W[0] <= 0; W[1] <= 0; W[2] <= 0;
             W[3] <= 0; W[4] <= 0; W[5] <= 0;
             W[6] <= 0; W[7] <= 0; W[8] <= 0;
+
         end else if (ena) begin
-            // 1) Input Data Loading (Όταν είμαστε σε IDLE)
+            // 1) Input Data Loading (When IDLE)
             if (state == STATE_IDLE && io_write) begin
                 case (io_addr)
                     4'd0: x[0] <= ui_in[4:0];
@@ -85,18 +89,18 @@ module tt_um_nn_3x3 (
                     4'd12: B[0] <= ui_in;
                     4'd13: B[1] <= ui_in;
                     4'd14: B[2] <= ui_in;
-                    default: ; // 15 is Start, no write
+                    default: ;
                 endcase
             end
 
-            // 2) FSM Core για υπολογισμούς NN
+            // 2) FSM Core for NN calculations
             case (state)
                 STATE_IDLE: begin
-                    if (io_addr == 4'd15 && !io_write && !io_read) begin // Trigger Start Calculation
+                    if (io_addr == 4'd15 && !io_write && !io_read) begin
                         state <= STATE_MAC;
                         calc_step <= 0;
                         current_neuron <= 0;
-                        accumulator <= $signed({ {4{B[0][7]}}, B[0] }); // Φόρτωση αρχικού Bias
+                        accumulator <= $signed({ {4{B[0][7]}}, B[0] }); // Load initial Bias
                     end
                 end
 
@@ -113,7 +117,7 @@ module tt_um_nn_3x3 (
                 end
 
                 STATE_RELU: begin
-                    // ReLU Activation (Αν το MSB είναι 1 (αρνητικό), τότε 0. Αλλιώς saturate αν ξεπερνά τα όρια)
+                    // ReLU Activation (If MSB = 1 (negative), then output = 0. Else saturate if exceeds limits)
                     if (accumulator[11]) begin
                         y[current_neuron] <= 8'd0;
                     end else if (accumulator > 127) begin
@@ -124,7 +128,7 @@ module tt_um_nn_3x3 (
 
                     // Check if more neurons to calculate
                     if (current_neuron == 2) begin
-                        state <= STATE_IDLE; // Τέλος δικτύου
+                        state <= STATE_IDLE; // End of network
                     end else begin
                         current_neuron <= current_neuron + 1;
                         accumulator <= $signed({ {4{B[current_neuron + 1][7]}}, B[current_neuron + 1] }); // Pre-load next Bias
