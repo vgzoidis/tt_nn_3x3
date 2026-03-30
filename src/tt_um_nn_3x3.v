@@ -128,8 +128,10 @@ module tt_um_nn_3x3 (
                     end else begin
                         current_neuron <= current_neuron + 1;
                         accumulator <= $signed({ {4{B[current_neuron + 1][7]}}, B[current_neuron + 1] }); // Pre-load next Bias
+                        state <= STATE_MAC;
+                    end
                 end
-                
+
                 default: state <= STATE_IDLE;
             endcase
         end
