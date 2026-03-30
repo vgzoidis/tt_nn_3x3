@@ -1,42 +1,54 @@
-![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
+﻿![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
 
-# Tiny Tapeout Verilog Project Template
+# 3x3 Programmable Neural Network (Tiny TPU)
 
-- [Read the documentation for project](docs/info.md)
+A fully programmable, hardware-based 3-neuron neural network designed for the [Tiny Tapeout](https://tinytapeout.com) educational ASIC project. Developed as part of the Digital Systems HW course (AUTH).
 
-## What is Tiny Tapeout?
+## Design Overview & Architecture
 
-Tiny Tapeout is an educational project that aims to make it easier and cheaper than ever to get your digital and analog designs manufactured on a real chip.
+This project implements a sequential, shared-MAC Neural Network inside a **strict 1x1 ASIC Tile** limit. To satisfy the aggressive area footprint, the architecture multiplexes a single MAC (Multiply-Accumulate) unit across all neurons and inputs, managed by a custom Verilog Finite State Machine (FSM).
 
-To learn more and get started, visit https://tinytapeout.com.
+**Key Features:**
+* **Programmable Weights & Biases:** Unlike static networks, this design allows dynamic loading of W (3x3 weight matrix), B (3-element bias vector), and X (3-element input vector) values.
+* **Quantized Data Path:** To fit the 1x1 tile, the MAC operates on **5-bit signed integers** (Inputs & Weights range from -16 to +15), storing the results in a 12-bit accumulator.
+* **ReLU Activation:** Standard Rectified Linear Unit activation on output data, with automatic saturation behavior.
+* **Memory-mapped IO:** The `uio_in` pins act as a control bus (Address + Write/Read flags) to route inputs into the correct internal registers securely.
 
-## Set up your Verilog project
+## How it Works
 
-1. Add your Verilog files to the `src` folder.
-2. Edit the [info.yaml](info.yaml) and update information about your project, paying special attention to the `source_files` and `top_module` properties. If you are upgrading an existing Tiny Tapeout project, check out our [online info.yaml migration tool](https://tinytapeout.github.io/tt-yaml-upgrade-tool/).
-3. Edit [docs/info.md](docs/info.md) and add a description of your project.
-4. Adapt the testbench to your design. See [test/README.md](test/README.md) for more information.
+The design waits in the `IDLE` state while an external MCU (or testbench) streams the configuration. 
 
-The GitHub action will automatically build the ASIC files using [LibreLane](https://www.zerotoasiccourse.com/terminology/librelane/).
+1. **Configuration Phase (`uio_in[4] = 1`, Write Mode):** 
+   - `uio_in[3:0]` defines the target register address (0-2 for Inputs, 3-11 for Weights, 12-14 for Biases).
+   - Data is applied concurrently to `ui_in[7:0]` (using the lower 5 bits).
+2. **Execution Phase (`uio_in = 15`, Start Calc):** 
+   - The FSM switches to `MAC` state. It sequentially multiplies inputs with weights and accumulates.
+   - It transitions to `RELU` state to apply the activation function and store the result.
+   - Repeats until all 3 neurons have been evaluated.
+3. **Read Phase (`uio_in[5] = 1`, Read Mode):**
+   - Drives `uo_out` with the calculated Neural Network Output based on the requested address in `uio_in[1:0]`.
 
-## Enable GitHub actions to build the results page
+## How to Test It
 
-- [Enabling GitHub Pages](https://tinytapeout.com/faq/#my-github-action-is-failing-on-the-pages-part)
+The project is thoroughly verified mathematically and cyclically using a Python Coroutine Testbench (`cocotb`). 
 
-## Resources
+### Prerequisites:
+- Python 3+
+- `iverilog` (Icarus Verilog)
+- `make`
 
-- [FAQ](https://tinytapeout.com/faq/)
-- [Digital design lessons](https://tinytapeout.com/digital_design/)
-- [Learn how semiconductors work](https://tinytapeout.com/siliwiz/)
-- [Join the community](https://tinytapeout.com/discord)
-- [Build your design locally](https://www.tinytapeout.com/guides/local-hardening/)
+### Running the Tests:
+1. Navigate to the testing directory:
+   ```bash
+   cd test
+   ```
+2. Install testbench dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Execute the simulation:
+   ```bash
+   make
+   ```
 
-## What next?
-
-- [Submit your design to the next shuttle](https://app.tinytapeout.com/).
-- Edit [this README](README.md) and explain your design, how it works, and how to test it.
-- Share your project on your social network of choice:
-  - LinkedIn [#tinytapeout](https://www.linkedin.com/search/results/content/?keywords=%23tinytapeout) [@TinyTapeout](https://www.linkedin.com/company/100708654/)
-  - Mastodon [#tinytapeout](https://chaos.social/tags/tinytapeout) [@matthewvenn](https://chaos.social/@matthewvenn)
-  - X (formerly Twitter) [#tinytapeout](https://twitter.com/hashtag/tinytapeout) [@tinytapeout](https://twitter.com/tinytapeout)
-  - Bluesky [@tinytapeout.com](https://bsky.app/profile/tinytapeout.com)
+A successful output will log the sequential loading of Weights, Biases, and Inputs, followed by triggering the hardware calculation and asserting the exact dot-product values against the `uo_out` pin. If the simulation passes, the Verilog FSM is mathematically sound and clock-perfect!
