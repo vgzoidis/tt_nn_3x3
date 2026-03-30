@@ -11,7 +11,7 @@ This project implements a sequential, shared-MAC Neural Network inside a **stric
 **Key Features:**
 * **Programmable Weights & Biases:** Unlike static networks, this design allows dynamic loading of W (3x3 weight matrix), B (3-element bias vector), and X (3-element input vector) values.
 * **Quantized Data Path:** To fit the 1x1 tile, the MAC operates on **5-bit signed integers** (Inputs & Weights range from -16 to +15), storing the results in a 12-bit accumulator.
-* **ReLU Activation:** Standard Rectified Linear Unit activation on output data, with automatic saturation behavior.
+* **Programmable PReLU Activation:** Programmable Parametric Rectified Linear Unit activation on output data. Configurable via Address 15 as standard ReLU, $x/2$, $x/4$, or $x/8$.
 * **Memory-mapped IO:** The `uio_in` pins act as a control bus (Address + Write/Read flags) to route inputs into the correct internal registers securely.
 
 ## How it Works
@@ -22,8 +22,9 @@ The design waits in the `IDLE` state while an external MCU (or testbench) stream
    - `uio_in[3:0]` defines the target register address (0-2 for Inputs, 3-11 for Weights, 12-14 for Biases).
    - Data is applied concurrently to `ui_in[7:0]` (using the lower 5 bits).
 2. **Execution Phase (`uio_in = 15`, Start Calc):** 
+   - Apply a 2-bit value on `ui_in[1:0]` to configure the Programmable PReLU: `00` for standard ReLU, `01` for $x/2$, `10` for $x/4$, and `11` for $x/8$.
    - The FSM switches to `MAC` state. It sequentially multiplies inputs with weights and accumulates.
-   - It transitions to `RELU` state to apply the activation function and store the result.
+   - It transitions to `RELU` state to apply the configured activation function and store the result.
    - Repeats until all 3 neurons have been evaluated.
 3. **Read Phase (`uio_in[5] = 1`, Read Mode):**
    - Drives `uo_out` with the calculated Neural Network Output based on the requested address in `uio_in[1:0]`.

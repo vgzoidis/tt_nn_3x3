@@ -47,6 +47,11 @@ async def test_nn_project(dut):
         dut.uio_in.value = 16 + 12 + i 
         await ClockCycles(dut.clk, 1)
 
+    dut._log.info("Setting PReLU Config to standard ReLU (00)...")
+    dut.ui_in.value = 0
+    dut.uio_in.value = 16 + 15  # io_write=1 (16) + addr 15
+    await ClockCycles(dut.clk, 1)
+
     dut._log.info("Loading Inputs...")
     # X = [2, 3, 1] => Addr 0, 1, 2
     inputs = [2, 3, 1]
@@ -105,6 +110,25 @@ async def test_nn_project(dut):
     await ClockCycles(dut.clk, 1)
     # MAC would be (5*-10)*3 + 5 = -145. ReLU should clamp to 0.
     assert dut.uo_out.value == 0, f"ReLU failed to clamp negative value! Y[0] was {dut.uo_out.value}"
+
+    dut._log.info("--- Edge Case 1b: Programmable PReLU (Divide by 4) ---")
+    # Keep the same inputs and weights (MAC = -145) but change PReLU config to 2'b10 (x/4)
+    dut.ui_in.value = 2  # 2'b10
+    dut.uio_in.value = 16 + 15
+    await ClockCycles(dut.clk, 1)
+
+    dut.uio_in.value = 15 # Start Calc
+    await ClockCycles(dut.clk, 1)
+    dut.uio_in.value = 0
+    await ClockCycles(dut.clk, 20)
+    
+    dut.uio_in.value = 32 + 0 # Read Y[0]
+    await ClockCycles(dut.clk, 1)
+    # MAC = -145. Shift right by 2 => -145 // 4 = -37
+    # In 8-bit unsigned, -37 is 256 - 37 = 219
+    expected_prelu = 219
+    actual = dut.uo_out.value
+    assert actual == expected_prelu, f"PReLU div-4 failed! Y[0] was {actual}, expected {expected_prelu}"
 
     dut._log.info("--- Edge Case 2: Positive Saturation ---")
     # Load inputs that will produce a massively positive MAC result (>127 max)

@@ -30,9 +30,13 @@ Clock the design to latch each value into its respective register.
 ### 2. Run Computation
 
 * Set `uio_in[4]` (`io_write`) to `0`.
-* Set `uio_in[3:0]` (address) to `15` (`4'b1111`).
-* The Finite State Machine (FSM) will trigger the calculation sequence. Keep the inputs idle.
-* Wait for roughly 12-15 clock cycles until it completes and inherently returns to the `STATE_IDLE` state.
+* Set `uio_in[3:0]` (address) to `15` (`4'b1111`) to trigger the calculation sequence.
+* Supply a 2-bit value on `ui_in[1:0]` to configure the Programmable PReLU activation function:
+  * `00`: Standard ReLU
+  * `01`: $x/2$
+  * `10`: $x/4$
+  * `11`: $x/8$
+* The Finite State Machine (FSM) will begin computation. Wait for roughly 12-15 clock cycles until it completes and inherently returns to the `STATE_IDLE` state.
 
 ### 3. Read Outputs
 

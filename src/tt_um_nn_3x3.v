@@ -37,6 +37,7 @@ module tt_um_nn_3x3 (
     // Programmable Weights and Biases (Reduced to 5-bit to fit density)
     reg signed [4:0] W [0:8]; // Weights (5-bit: -16 to +15)
     reg signed [7:0] B [0:2]; // Biases (8-bit)
+    reg [1:0] prelu_config;   // 00: standard ReLU, 01: x/2, 10: x/4, 11: x/8
 
     // ==========================================
     // The Single Shared MAC Unit Engine
@@ -67,6 +68,7 @@ module tt_um_nn_3x3 (
             W[0] <= 0; W[1] <= 0; W[2] <= 0;
             W[3] <= 0; W[4] <= 0; W[5] <= 0;
             W[6] <= 0; W[7] <= 0; W[8] <= 0;
+            prelu_config <= 2'b00;
 
         end else if (ena) begin
             // 1) Input Data Loading (When IDLE)
@@ -89,6 +91,7 @@ module tt_um_nn_3x3 (
                     4'd12: B[0] <= ui_in;
                     4'd13: B[1] <= ui_in;
                     4'd14: B[2] <= ui_in;
+                    4'd15: prelu_config <= ui_in[1:0];
                     default: ;
                 endcase
             end
@@ -117,9 +120,14 @@ module tt_um_nn_3x3 (
                 end
 
                 STATE_RELU: begin
-                    // ReLU Activation (If MSB = 1 (negative), then output = 0. Else saturate if exceeds limits)
+                    // Programmable PReLU Activation
                     if (accumulator[11]) begin
-                        y[current_neuron] <= 8'd0;
+                        case (prelu_config)
+                            2'b00: y[current_neuron] <= 8'd0; // Standard ReLU
+                            2'b01: y[current_neuron] <= ($signed(accumulator) < -256) ? 8'h80 : ($signed(accumulator) >>> 1); // x/2
+                            2'b10: y[current_neuron] <= ($signed(accumulator) < -512) ? 8'h80 : ($signed(accumulator) >>> 2); // x/4
+                            2'b11: y[current_neuron] <= ($signed(accumulator) >>> 3); // x/8
+                        endcase
                     end else if (accumulator > 127) begin
                         y[current_neuron] <= 8'd127; // Saturation positive     
                     end else begin
