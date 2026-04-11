@@ -87,7 +87,7 @@ async def test_nn_project(dut):
     await ClockCycles(dut.clk, 1)
     assert dut.uo_out.value == 2, f"Y[2] was {dut.uo_out.value}, expected 2"
 
-    dut._log.info("--- Edge Case 1: ReLU Negative Clamping ---")
+    dut._log.info("--- Edge Case 1a: ReLU Negative Clamping ---")
     # Load inputs that will produce a strongly negative MAC result
     neg_inputs = [5, 5, 5]
     for i, x in enumerate(neg_inputs):

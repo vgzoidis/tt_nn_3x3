@@ -62,15 +62,16 @@ module tt_um_nn_3x3 (
                                        underflow ? 14'h2000 : 
                                        next_acc_calc[13:0];
                                        
-    // Shifted values for PReLU to avoid linting width warnings
-    wire [7:0] s_acc_1 = accumulator[8:1];
-    wire [7:0] s_acc_2 = accumulator[9:2];
-    wire [7:0] s_acc_3 = accumulator[10:3];
+    // Shifted values for PReLU to avoid linting width warnings.
+    // Based on next_acc_safe to pipeline activation combinationally
+    wire [7:0] s_next_acc_1 = next_acc_safe[8:1];
+    wire [7:0] s_next_acc_2 = next_acc_safe[9:2];
+    wire [7:0] s_next_acc_3 = next_acc_safe[10:3];
 
-    localparam STATE_IDLE = 2'b00;
-    localparam STATE_MAC  = 2'b01;
-    localparam STATE_RELU = 2'b10;
-    reg [1:0] state;
+    // FSM States: 1-bit state machine to minimize area footprint
+    localparam STATE_IDLE = 1'b0;
+    localparam STATE_MAC  = 1'b1;
+    reg state;
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -133,39 +134,35 @@ module tt_um_nn_3x3 (
                 end
 
                 STATE_MAC: begin
-                    // Accumulator saturating addition
-                    accumulator <= next_acc_safe;
-
                     if (calc_step == 2) begin
-                        state <= STATE_RELU;
-                        calc_step <= 0;
+                        // 1. Compute and store Activation (ReLU/PReLU) using the combinational next_acc_safe.
+                        // This allows for a zero-cycle activation penalty, computing the activation in the final MAC cycle.
+                        if (next_acc_safe[13]) begin // if negative
+                            case (prelu_config[current_neuron])
+                                2'b00: y[current_neuron] <= 8'd0; // Standard ReLU
+                                2'b01: y[current_neuron] <= ($signed(next_acc_safe) < -256) ? 8'h80 : s_next_acc_1; // x/2
+                                2'b10: y[current_neuron] <= ($signed(next_acc_safe) < -512) ? 8'h80 : s_next_acc_2; // x/4
+                                2'b11: y[current_neuron] <= ($signed(next_acc_safe) < -1024) ? 8'h80 : s_next_acc_3; // x/8
+                            endcase
+                        end else if (next_acc_safe > 127) begin
+                            y[current_neuron] <= 8'd127; // Saturation positive     
+                        end else begin
+                            y[current_neuron] <= next_acc_safe[7:0];
+                        end
+
+                        // 2. Setup the next neuron immediately or stop
+                        if (current_neuron == 2) begin
+                            state <= STATE_IDLE; // End of network
+                        end else begin
+                            current_neuron <= current_neuron + 1;
+                            calc_step <= 0;
+                            // Pre-load the accumulator with the next neuron's bias
+                            accumulator <= $signed({ {6{B[current_neuron + 1][7]}}, B[current_neuron + 1] }); 
+                        end
                     end else begin
+                        // Normal Accumulator saturating addition
+                        accumulator <= next_acc_safe;
                         calc_step <= calc_step + 1;
-                    end
-                end
-
-                STATE_RELU: begin
-                    // Programmable PReLU Activation
-                    if (accumulator[13]) begin
-                        case (prelu_config[current_neuron])
-                            2'b00: y[current_neuron] <= 8'd0; // Standard ReLU
-                            2'b01: y[current_neuron] <= ($signed(accumulator) < -256) ? 8'h80 : s_acc_1; // x/2
-                            2'b10: y[current_neuron] <= ($signed(accumulator) < -512) ? 8'h80 : s_acc_2; // x/4
-                            2'b11: y[current_neuron] <= ($signed(accumulator) < -1024) ? 8'h80 : s_acc_3; // x/8
-                        endcase
-                    end else if (accumulator > 127) begin
-                        y[current_neuron] <= 8'd127; // Saturation positive     
-                    end else begin
-                        y[current_neuron] <= accumulator[7:0];
-                    end
-
-                    // Check if more neurons to calculate
-                    if (current_neuron == 2) begin
-                        state <= STATE_IDLE; // End of network
-                    end else begin
-                        current_neuron <= current_neuron + 1;
-                        accumulator <= $signed({ {6{B[current_neuron + 1][7]}}, B[current_neuron + 1] }); // Pre-load next Bias
-                        state <= STATE_MAC;
                     end
                 end
 

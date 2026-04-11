@@ -36,7 +36,7 @@ Clock the design to latch each value into its respective register.
   * `01`: $x/2$
   * `10`: $x/4$
   * `11`: $x/8$
-* The Finite State Machine (FSM) will begin computation. Wait for roughly 12-15 clock cycles until it completes and inherently returns to the `STATE_IDLE` state.
+* The Finite State Machine (FSM) will begin computation. Wait for exactly 9 clock cycles until it completes and inherently returns to the `STATE_IDLE` state. The FSM is highly optimized, computing 1 inference for a neuron every 3 clock cycles by overlapping the PReLU activation combinationally with the final Multiply-Accumulate step (zero-cycle activation penalty).
 
 ### 3. Read Outputs
 
