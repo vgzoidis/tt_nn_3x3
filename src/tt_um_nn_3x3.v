@@ -15,42 +15,31 @@ module tt_um_nn_3x3 (
     input  wire       clk,      // clock
     input  wire       rst_n     // reset_n - low to reset
 );
-
-    // ==========================================
     // TinyTapeout Pin Configuration
-    // ==========================================
     assign uio_oe  = 8'b0000_0000;
     assign uio_out = 8'b0;
 
-    wire [3:0] io_addr  = uio_in[3:0]; // 0..14=Write Addr, 15=Start Calc
-    wire       io_write = uio_in[4];   // 1=Write to selected address
-    wire       io_read  = uio_in[5];   // 1=Read outputs
+    wire [3:0] io_addr  = uio_in[3:0];                  // 0..14=Write Addr, 15=Start Calc
+    wire       io_write = uio_in[4];                    // 1=Write to selected address
+    wire       io_read  = uio_in[5];                    // 1=Read outputs
+    wire       _unused  = &{1'b0, uio_in[7:6], 1'b0};   // Suppress unused signals warning
 
-    wire _unused = &{1'b0, uio_in[7:6], 1'b0}; // Suppress unused signals warning
-
-    // ==========================================
-    // Registers & Storage (Optimized for Tile area limits)
-    // ==========================================
+    // Registers & Storage
     reg signed [5:0] x [0:2]; // 3 x 6-bit Inputs
     reg signed [7:0] y [0:2]; // 3 x 8-bit Outputs
 
-    // Programmable Weights and Biases (6-bit to fit density)
-    reg signed [5:0] W [0:8]; // Weights (6-bit: -32 to +31)
-    reg signed [7:0] B [0:2]; // Biases (8-bit)
-    reg [1:0] prelu_config [0:2]; // Per-neuron config (00: standard ReLU, 01: x/2, 10: x/4, 11: x/8)
+    // Programmable Weights and Biases
+    reg signed [5:0] W [0:8];               // Weights
+    reg signed [7:0] B [0:2];               // Biases
+    reg        [1:0] prelu_config [0:2];    // Per-neuron config
 
-    // ==========================================
-    // Single Shared MAC Unit Engine
-    // ==========================================
-    // 6-bit x 6-bit = 12-bit product. 
-    // 3 MACs + 8-bit bias + safety logic = 14-bit accumulator needed
+    // Shared MAC Unit Engine
     reg signed [13:0] accumulator; 
-    reg [1:0] calc_step;
-    reg [1:0] current_neuron;
+    reg        [1:0] calc_step;
+    reg        [1:0] current_neuron;
 
-    // Resolve the Weight index dynamically and multiply
-    wire [3:0] weight_idx = ({2'b00, current_neuron} * 4'd3) + {2'b00, calc_step};
-    wire signed [11:0] product = x[calc_step] * W[weight_idx];
+    // Multiply dynamically shifted Weight (W[0] always holds current weight)
+    wire signed [11:0] product = x[calc_step] * W[0];
     
     // Saturation Logic for MAC Addition
     wire signed [13:0] product_ext = $signed({ {2{product[11]}}, product });
@@ -62,16 +51,31 @@ module tt_um_nn_3x3 (
                                        underflow ? 14'h2000 : 
                                        next_acc_calc[13:0];
                                        
-    // Shifted values for PReLU to avoid linting width warnings.
-    // Based on next_acc_safe to pipeline activation combinationally
-    wire [7:0] s_next_acc_1 = next_acc_safe[8:1];
-    wire [7:0] s_next_acc_2 = next_acc_safe[9:2];
-    wire [7:0] s_next_acc_3 = next_acc_safe[10:3];
+    // Shifted values for PReLU to avoid linting width warnings (Combinational)
+    wire [7:0] s_next_1 = next_acc_safe[8:1];
+    wire [7:0] s_next_2 = next_acc_safe[9:2];
+    wire [7:0] s_next_3 = next_acc_safe[10:3];
 
-    // FSM States: 1-bit state machine to minimize area footprint
-    localparam STATE_IDLE = 1'b0;
-    localparam STATE_MAC  = 1'b1;
-    reg state;
+    // Combinational PReLU Activation
+    reg [7:0] y_next;
+    always @(*) begin
+        if (next_acc_safe[13]) begin
+            case (prelu_config[current_neuron])
+                2'b00: y_next = 8'd0;
+                2'b01: y_next = ($signed(next_acc_safe) < -256) ? 8'h80 : s_next_1;
+                2'b10: y_next = ($signed(next_acc_safe) < -512) ? 8'h80 : s_next_2;
+                2'b11: y_next = ($signed(next_acc_safe) < -1024) ? 8'h80 : s_next_3;
+            endcase
+        end else if ($signed(next_acc_safe) > 127) begin
+            y_next = 8'd127;
+        end else begin
+            y_next = next_acc_safe[7:0];
+        end
+    end
+
+    localparam STATE_IDLE = 2'b00;
+    localparam STATE_MAC  = 2'b01;
+    reg [1:0] state;
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -134,46 +138,34 @@ module tt_um_nn_3x3 (
                 end
 
                 STATE_MAC: begin
-                    if (calc_step == 2) begin
-                        // 1. Compute and store Activation (ReLU/PReLU) using the combinational next_acc_safe.
-                        // This allows for a zero-cycle activation penalty, computing the activation in the final MAC cycle.
-                        if (next_acc_safe[13]) begin // if negative
-                            case (prelu_config[current_neuron])
-                                2'b00: y[current_neuron] <= 8'd0; // Standard ReLU
-                                2'b01: y[current_neuron] <= ($signed(next_acc_safe) < -256) ? 8'h80 : s_next_acc_1; // x/2
-                                2'b10: y[current_neuron] <= ($signed(next_acc_safe) < -512) ? 8'h80 : s_next_acc_2; // x/4
-                                2'b11: y[current_neuron] <= ($signed(next_acc_safe) < -1024) ? 8'h80 : s_next_acc_3; // x/8
-                            endcase
-                        end else if (next_acc_safe > 127) begin
-                            y[current_neuron] <= 8'd127; // Saturation positive     
-                        end else begin
-                            y[current_neuron] <= next_acc_safe[7:0];
-                        end
+                    // Shift Weights for next calculation
+                    W[0] <= W[1]; W[1] <= W[2]; W[2] <= W[3];
+                    W[3] <= W[4]; W[4] <= W[5]; W[5] <= W[6];
+                    W[6] <= W[7]; W[7] <= W[8]; W[8] <= W[0];
 
-                        // 2. Setup the next neuron immediately or stop
+                    if (calc_step == 2) begin
+                        // Save the combinationally calculated ReLU output
+                        y[current_neuron] <= y_next;
+                        calc_step <= 0;
+
                         if (current_neuron == 2) begin
                             state <= STATE_IDLE; // End of network
                         end else begin
                             current_neuron <= current_neuron + 1;
-                            calc_step <= 0;
-                            // Pre-load the accumulator with the next neuron's bias
-                            accumulator <= $signed({ {6{B[current_neuron + 1][7]}}, B[current_neuron + 1] }); 
+                            // Pre-load next Bias
+                            accumulator <= $signed({ {6{B[current_neuron + 1][7]}}, B[current_neuron + 1] });
                         end
                     end else begin
-                        // Normal Accumulator saturating addition
+                        // Accumulator saturating addition
                         accumulator <= next_acc_safe;
                         calc_step <= calc_step + 1;
                     end
                 end
-
-                default: state <= STATE_IDLE;
             endcase
         end
     end
 
-    // ==========================================
     // Output Routing (Multiplexed output based on address)
-    // ==========================================
     reg [7:0] out_mux;
     always @(*) begin
         if (io_read) begin
