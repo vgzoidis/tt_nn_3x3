@@ -73,9 +73,9 @@ module tt_um_nn_3x3 (
         end
     end
 
-    localparam STATE_IDLE = 2'b00;
-    localparam STATE_MAC  = 2'b01;
-    reg [1:0] state;
+    localparam STATE_IDLE = 1'b0;
+    localparam STATE_MAC  = 1'b1;
+    reg state;
 
     always @(posedge clk) begin
         if (!rst_n) begin
